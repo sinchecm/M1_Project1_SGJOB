@@ -102,7 +102,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-def kpi(col, val, lbl, accent=None):
+def kpi_card(col, val, lbl, accent=None):
     accent = accent or C["red"]
     col.markdown(
         f'<div class="kpi" style="border-top-color:{accent}">'
@@ -210,7 +210,7 @@ kpi = con.execute(f"""
         QUANTILE_CONT(salary, 0.98)                                 AS sal_p98
     FROM jobs WHERE {WHERE}
 """).df().iloc[0]
-N = int(kpi["n"])
+N = int(metrics["n"])
 
 
 # ── Page header ───────────────────────────────────────────────────────────────
@@ -237,18 +237,18 @@ with tab1:
     st.caption("**For:** MOM Policy Analysts · Enterprise Singapore · National Planners  |  Macro demand, salary benchmarks, sector health")
 
     k1,k2,k3,k4,k5,k6 = st.columns(6)
-    open_n   = int(kpi["open_n"])
-    med_sal  = float(kpi["med_sal"])
-    tot_vac  = int(kpi["tot_vac"])
-    rng_rate = float(kpi["rng_rate"])*100
-    avg_apps = float(kpi["avg_apps"])
+    open_n   = int(metrics["open_n"])
+    med_sal  = float(metrics["med_sal"])
+    tot_vac  = int(metrics["tot_vac"])
+    rng_rate = float(metrics["rng_rate"])*100
+    avg_apps = float(metrics["avg_apps"])
 
-    kpi(k1, fmt_k(N),            "Total Postings",            C["navy"])
-    kpi(k2, fmt_k(open_n),       "Open / Active Roles",       C["red"])
-    kpi(k3, f"S${med_sal:,.0f}", "Median Monthly Salary",     C["teal"])
-    kpi(k4, fmt_k(tot_vac),      "Total Vacancies",           C["gold"])
-    kpi(k5, f"{rng_rate:.1f}%",  "Salary Range Disclosure",   C["purple"])
-    kpi(k6, f"{avg_apps:.1f}",   "Avg Applications / Post",   C["sky"])
+    kpi_card(k1, fmt_k(N),            "Total Postings",            C["navy"])
+    kpi_card(k2, fmt_k(open_n),       "Open / Active Roles",       C["red"])
+    kpi_card(k3, f"S${med_sal:,.0f}", "Median Monthly Salary",     C["teal"])
+    kpi_card(k4, fmt_k(tot_vac),      "Total Vacancies",           C["gold"])
+    kpi_card(k5, f"{rng_rate:.1f}%",  "Salary Range Disclosure",   C["purple"])
+    kpi_card(k6, f"{avg_apps:.1f}",   "Avg Applications / Post",   C["sky"])
     st.markdown("")
 
     c1, c2 = st.columns([6,4])
@@ -367,19 +367,19 @@ with tab2:
     st.caption("**For:** Business Leaders · HR Professionals · Workforce Development Bodies  |  Mismatch diagnosis, automation targeting, over-specification detection")
 
     b1,b2,b3,b4,b5 = st.columns(5)
-    avg_hfi   = float(kpi["avg_hfi"])
-    avg_acr   = float(kpi["avg_acr"] or 0)*100
-    avg_ebi   = float(kpi["avg_ebi"] or 0)
-    repost_rt = float(kpi["repost_rt"])*100
-    acr_range = float(kpi["acr_range"] or 0)*100
-    acr_point = float(kpi["acr_point"] or 0)*100
+    avg_hfi   = float(metrics["avg_hfi"])
+    avg_acr   = float(metrics["avg_acr"] or 0)*100
+    avg_ebi   = float(metrics["avg_ebi"] or 0)
+    repost_rt = float(metrics["repost_rt"])*100
+    acr_range = float(metrics["acr_range"] or 0)*100
+    acr_point = float(metrics["acr_point"] or 0)*100
     rng_lift  = acr_range - acr_point
 
-    kpi(b1, f"{avg_hfi:.3f}",    "Avg Hiring Friction Index",       C["red"])
-    kpi(b2, f"{avg_acr:.1f}%",   "Avg App Conversion Rate",         C["navy"])
-    kpi(b3, f"{avg_ebi:.1f}",    "Avg Exp Barrier Index",           C["gold"])
-    kpi(b4, f"{repost_rt:.1f}%", "Repost Rate",                     C["purple"])
-    kpi(b5, f"+{rng_lift:.1f}%", "ACR Lift: Range vs Point Salary", C["teal"])
+    kpi_card(b1, f"{avg_hfi:.3f}",    "Avg Hiring Friction Index",       C["red"])
+    kpi_card(b2, f"{avg_acr:.1f}%",   "Avg App Conversion Rate",         C["navy"])
+    kpi_card(b3, f"{avg_ebi:.1f}",    "Avg Exp Barrier Index",           C["gold"])
+    kpi_card(b4, f"{repost_rt:.1f}%", "Repost Rate",                     C["purple"])
+    kpi_card(b5, f"+{rng_lift:.1f}%", "ACR Lift: Range vs Point Salary", C["teal"])
     st.markdown("")
 
     c1, c2 = st.columns(2)
@@ -679,10 +679,10 @@ with tab4:
 
     sec("Cleaning Pipeline Summary")
     dq1,dq2,dq3,dq4 = st.columns(4)
-    kpi(dq1, "1,048,585", "Raw Rows Ingested",         C["navy"])
-    kpi(dq2, "3,998",     "Rows Removed (0.38%)",      C["red"])
-    kpi(dq3, "1,044,587", "Clean Rows (99.6%)",        C["teal"])
-    kpi(dq4, "37",        "Output Columns (was 22)",   C["gold"])
+    kpi_card(dq1, "1,048,585", "Raw Rows Ingested",         C["navy"])
+    kpi_card(dq2, "3,998",     "Rows Removed (0.38%)",      C["red"])
+    kpi_card(dq3, "1,044,587", "Clean Rows (99.6%)",        C["teal"])
+    kpi_card(dq4, "37",        "Output Columns (was 22)",   C["gold"])
     st.markdown("")
 
     st.dataframe(pd.DataFrame({
@@ -726,7 +726,7 @@ with tab4:
             "Views likely undercounted (external channels). Record otherwise valid.",
             "Prevents future duplication risk.",
         ],
-    }), width='stretch', hide_index=True)
+    }), use_container_width=True, hide_index=True)
 
     st.markdown("")
     sec("8 Key EDA Findings That Shaped Dashboard Design")
@@ -784,7 +784,7 @@ with tab4:
             f'<div class="ibox" style="background:var(--secondary-background-color);border-left:5px solid {colour};'
             f'box-shadow:0 1px 5px rgba(0,0,0,.06);margin-bottom:10px">'
             f'<div style="font-weight:800;color:{colour};margin-bottom:4px">{title}</div>'
-            f'<div style="color:#2C3E50">{body}</div></div>',
+            f'<div style="color:var(--text-color)">{body}</div></div>',
             unsafe_allow_html=True)
 
     st.markdown("")
