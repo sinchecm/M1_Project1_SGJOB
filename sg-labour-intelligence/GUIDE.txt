@@ -1,0 +1,697 @@
+===============================================================================
+  SG LABOUR MARKET INTELLIGENCE — PROJECT GUIDE
+  Stack: Python · DuckDB · Pandas · NumPy · Streamlit · Plotly · Parquet
+  Data : MyCareersFuture (MCF) Job Postings, Oct 2022 – May 2024
+===============================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PROJECT DIRECTORY STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  sg-labour-intelligence/
+  │
+  ├── data/
+  │   ├── raw/
+  │   │   └── SGJobData.csv               ← place your original source file here
+  │   └── clean/
+  │       ├── SGJobData_clean.parquet     ← produced by data_cleaning.py
+  │       └── cleaning_report.json        ← audit log (auto-generated)
+  │
+  ├── pipeline/
+  │   └── data_cleaning.py                ← Step 1: run this first
+  │
+  ├── dashboard/
+  │   └── sg_labour_dashboard.py          ← Step 2: run this second
+  │
+  ├── notebooks/                          ← optional, for ad-hoc EDA
+  │   └── eda_exploration.ipynb
+  │
+  ├── requirements.txt                    ← all Python dependencies
+  ├── .gitignore                          ← keeps large files out of Git
+  └── GUIDE.txt                           ← this file
+
+
+  FILE PURPOSES AT A GLANCE
+  ─────────────────────────
+  data/raw/SGJobData.csv          The unmodified source file. Never edit this.
+                                  Treat it as read-only. It is your ground truth.
+
+  pipeline/data_cleaning.py       Reads the raw CSV via DuckDB, applies all
+                                  cleaning rules (documented inside), and writes
+                                  the clean Parquet file + a JSON audit log.
+                                  Run once per data refresh.
+
+  data/clean/SGJobData_clean.parquet
+                                  The production-ready dataset. 1,044,587 rows,
+                                  37 typed columns. Loads ~10× faster than the
+                                  raw CSV. This is what the dashboard reads.
+
+  data/clean/cleaning_report.json Machine-readable log of every cleaning action:
+                                  action name, rows affected, rationale.
+                                  Use this for stakeholder data-quality reports.
+
+  dashboard/sg_labour_dashboard.py
+                                  The Streamlit web application. Four tabs:
+                                  National Overview · Bottlenecks & Friction ·
+                                  Time Trends · Data Quality & EDA.
+                                  Reads the clean Parquet; does not touch raw CSV.
+
+  requirements.txt                Pin-exact Python package list. Install once.
+
+  .gitignore                      Excludes *.csv, *.parquet, *.db from Git
+                                  (large binary/data files do not belong in
+                                  version control).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PREREQUISITES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Software you need installed before starting:
+
+  1. Python 3.10 or higher
+     Download: https://www.python.org/downloads/
+     Verify:   python --version   (must show 3.10+)
+
+  2. pip (comes with Python)
+     Verify:   pip --version
+
+  3. Git (optional, for version control)
+     Download: https://git-scm.com/downloads
+
+  4. DBGate (optional, for visual SQL exploration)
+     Download: https://dbgate.org/
+     Use:      Connect to the clean Parquet or a DuckDB file for ad-hoc queries.
+               Not required to run the dashboard.
+
+  Disk space required:
+     SGJobData.csv             ~150 MB
+     SGJobData_clean.parquet    ~35 MB
+     Python environment         ~300 MB
+     Total                     ~500 MB
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  SETUP — DO THIS ONCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── Step A: Create the project folder ───────────────────────────────────────
+
+    Open a terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run:
+
+      mkdir sg-labour-intelligence
+      cd sg-labour-intelligence
+      mkdir -p data/raw data/clean pipeline dashboard notebooks
+
+    On Windows (Command Prompt), use backslashes:
+
+      mkdir sg-labour-intelligence
+      cd sg-labour-intelligence
+      mkdir data\raw data\clean pipeline dashboard notebooks
+
+
+  ── Step B: Copy project files ───────────────────────────────────────────────
+
+    Copy the files you downloaded into the correct folders:
+
+      data_cleaning.py          →  pipeline/data_cleaning.py
+      sg_labour_dashboard.py    →  dashboard/sg_labour_dashboard.py
+      SGJobData.csv             →  data/raw/SGJobData.csv
+      requirements.txt          →  requirements.txt  (project root)
+
+    Your folder should now look like this:
+
+      sg-labour-intelligence/
+      ├── data/raw/SGJobData.csv
+      ├── pipeline/data_cleaning.py
+      ├── dashboard/sg_labour_dashboard.py
+      └── requirements.txt
+
+
+  ── Step C: Create a virtual environment ────────────────────────────────────
+
+    A virtual environment keeps this project's packages separate from your
+    other Python projects. Strongly recommended.
+
+    Mac / Linux:
+      python3 -m venv venv
+      source venv/bin/activate
+
+    Windows:
+      python -m venv venv
+      venv\Scripts\activate
+
+    You will see (venv) at the start of your terminal prompt when active.
+    You must activate the environment every time you open a new terminal.
+
+
+  ── Step D: Install dependencies ────────────────────────────────────────────
+
+    With the virtual environment active:
+
+      pip install -r requirements.txt
+
+    This installs: streamlit, duckdb, pandas, numpy, plotly, pyarrow.
+    Takes 1–3 minutes depending on your internet connection.
+
+    Verify the key packages installed correctly:
+
+      python -c "import streamlit, duckdb, pandas, plotly; print('All OK')"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  RUNNING THE PROJECT — DO THIS IN ORDER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  !! IMPORTANT: Always run from the project root folder (sg-labour-intelligence/)
+  !! The scripts use relative paths that depend on where you run them from.
+
+
+  ── STEP 1: Run the cleaning pipeline ───────────────────────────────────────
+
+    python pipeline/data_cleaning.py
+
+    What happens:
+      - Reads  data/raw/SGJobData.csv  via DuckDB (fast columnar reader)
+      - Applies all cleaning rules (see CLEANING RULES section below)
+      - Writes data/clean/SGJobData_clean.parquet  (35 MB, typed, fast)
+      - Writes data/clean/cleaning_report.json     (audit log)
+      - Prints a summary to the terminal
+
+    Expected output (last few lines):
+      ══════════════════════════════════════
+      CLEANING SUMMARY
+      ══════════════════════════════════════
+        Input rows     :  1,048,585
+        Output rows    :  1,044,587
+        Rows removed   :      3,998  (0.381%)
+        Output columns :         37
+        Output file    : data/clean/SGJobData_clean.parquet
+
+    Expected duration: 25–60 seconds depending on your machine.
+
+    This step only needs to be re-run when you receive a new data file.
+    The dashboard always reads the clean Parquet — it never touches the CSV.
+
+
+  ── STEP 2: Launch the dashboard ────────────────────────────────────────────
+
+    streamlit run dashboard/sg_labour_dashboard.py
+
+    What happens:
+      - Streamlit starts a local web server
+      - Your browser opens automatically at http://localhost:8501
+      - First load: ~10–20 seconds (reads and registers 1M rows)
+      - Subsequent page interactions: near-instant (data is cached in memory)
+
+    To stop the dashboard: press Ctrl + C in the terminal.
+
+    If your browser does not open automatically:
+      Open any browser and go to:  http://localhost:8501
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UPDATING THE DATA (when a new CSV arrives)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Replace data/raw/SGJobData.csv with the new file.
+     (Keep the old file as SGJobData_YYYYMMDD.csv if you want a backup.)
+
+  2. Re-run the cleaning pipeline:
+       python pipeline/data_cleaning.py
+
+  3. Restart the dashboard (Ctrl+C then streamlit run again).
+     The @st.cache_resource decorator will reload the new Parquet automatically.
+
+  Nothing else needs to change. The cleaning rules and dashboard code are
+  data-agnostic — they work on any MCF-format CSV file.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CLEANING RULES REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  All rules are documented inside data_cleaning.py with inline comments.
+  Summary for quick reference:
+
+  Rule 1  — Drop 3,988 all-null ghost rows (no job_id, title, salary, or date).
+
+  Rule 2  — Drop 10 RANDOM_JOB_* synthetic test records (future-dated 2025-11-15,
+             salaries up to S$12.7M).
+
+  Rule 3  — Drop columns with zero information:
+             occupationId (100% null), status_id (always 0), salary_type (always "Monthly").
+
+  Rule 4  — Rename all metadata_* columns to short readable names.
+             e.g. metadata_repostCount → repost_count
+
+  Rule 5  — Parse dates: posting_date, expiry_date, new_posting_date.
+             Compute listing_duration_days and days_to_repost.
+             NOTE: listing_duration_days is the platform's posting window (7/14/21/30 days),
+             NOT actual time-to-fill. days_to_repost is the real friction signal.
+
+  Rule 6a — Flag salary > S$100,000/month as salary_valid = False.
+             Likely annual salary entered on monthly form. Retained for non-salary analytics.
+
+  Rule 6b — Flag salary S$1–499/month as salary_valid = False.
+             Likely hourly rates ($9–$15/hr) entered in monthly salary field.
+             Predominantly Part Time and Temporary roles.
+
+  Rule 6c — Compute salary_range_width = salary_max - salary_min.
+             Flag has_salary_range = 1 where width > 0 (range disclosed),
+             0 where width = 0 (point estimate only).
+             Range postings achieve +62% higher Application Conversion Rate.
+
+  Rule 6d — Create salary column = average_salary clipped to p99 (S$16,500).
+             NaN for salary_valid = False records.
+
+  Rule 7  — Cap min_exp_years at 30 (max was 88 — physically impossible).
+             Cap preserves record; corrects the outlier signal only.
+
+  Rule 8  — Cap vacancies at 99. Flag vacancies_is_sentinel = 1 for 999-vacancy
+             records (agencies use 999 as "unlimited" placeholder).
+
+  Rule 9  — Standardise company names to UPPER + strip whitespace.
+
+  Rule 10 — Parse JSON categories array → extract primary category (first element).
+             Store all categories as pipe-delimited string for completeness.
+
+  Rule 11 — Compute ACR = applications / views, clipped [0, 1]. NaN where views = 0.
+
+  Rule 12 — Engineer KPI columns:
+             hfi   Hiring Friction Index (0–1 composite)
+             ebi   Experience Barrier Index
+             year_month, year, quarter, month_num (temporal groupers)
+             salary_band (7 bands from <$2K to >$15K)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  KPI DEFINITIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  HFI — Hiring Friction Index  (range 0 to 1, higher = more friction)
+
+    HFI = 0.40 × (repost_count > 0)     reposted at least once
+        + 0.35 × (applications < 3)     near-zero applicant interest
+        + 0.25 × (vacancies > 5)        bulk unfilled demand
+
+    Interpret:
+      0.00 – 0.25   Low friction — market is clearing normally
+      0.25 – 0.50   Moderate friction — worth monitoring
+      0.50 – 0.75   High friction — structural mismatch likely
+      0.75 – 1.00   Severe friction — intervention recommended
+
+
+  ACR — Application Conversion Rate  (range 0 to 1)
+
+    ACR = applications / views    (only computed where views > 0)
+
+    Low ACR + adequate views = posting quality or pay band problem,
+    NOT necessarily a talent shortage.
+    High ACR = role is well-matched to available talent supply.
+
+    Typical MCF range: 0.02 – 0.15 across sectors.
+
+
+  EBI — Experience Barrier Index  (higher = more barrier)
+
+    EBI = min_exp_years / log(1 + salary) × 1000
+
+    The log transform prevents high-salary roles from artificially
+    suppressing EBI. High EBI = heavy experience demanded relative
+    to salary offered = over-specification trap.
+
+    Sectors in the bottom-right quadrant of the scatter chart
+    (high EBI, below-median salary) are creating their own
+    talent pipeline shortage.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  DASHBOARD TABS — PURPOSE AND TARGET USER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Tab 1 — National Overview
+    Target users : MOM Policy Analysts, Enterprise Singapore, National Planners
+    Key views    : 6 KPI cards, top industries (volume + salary colour),
+                   position level donut, salary histogram with P25/P75,
+                   top 25 job titles, salary by level with IQR error bars
+    Supports     : Macro demand diagnosis, salary benchmarking, sector health,
+                   PSG grant targeting decisions
+
+  Tab 2 — Bottlenecks & Friction
+    Target users : Business Leaders, HR Professionals, Workforce Development
+    Key views    : HFI by industry, ACR by industry (worst first),
+                   experience barrier scatter (4-quadrant annotated),
+                   company vacancy leaderboard, pay range vs point ACR,
+                   repost rate by salary band
+    Supports     : Mismatch diagnosis, automation investment decisions,
+                   over-specification detection, JD quality improvement
+
+  Tab 3 — Time Trends
+    Target users : All groups — strategic planning, policy monitoring
+    Key views    : Monthly postings + vacancies (dual axis),
+                   salary trend by position level, sector growth H1→H2,
+                   HFI trend + repost rate, repost timing distribution,
+                   quarterly sector activity heatmap (row-normalised)
+    Supports     : Cyclical vs structural demand detection,
+                   leading indicators of wage pressure,
+                   SkillsFuture training pipeline decisions
+
+  Tab 4 — Data Quality & EDA
+    Target users : Analysts, data stewards, project reviewers
+    Key views    : Cleaning summary table, 8 EDA findings cards,
+                   4 raw distribution charts (salary log-scale,
+                   zero-inflation, listing duration spikes, repost timing)
+    Supports     : Audit and transparency, methodology documentation,
+                   stakeholder trust in dashboard figures
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  USING DBGATE FOR EXPLORATION (OPTIONAL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  DBGate is a free, open-source database GUI that can open DuckDB files and
+  query Parquet files directly. Use it for ad-hoc exploration alongside this
+  project — it does NOT replace the cleaning pipeline or dashboard.
+
+  Connecting DBGate to the clean Parquet:
+
+    1. Open DBGate
+    2. Click  Add Connection  →  select  DuckDB
+    3. In the database file field, click Browse and select:
+         data/clean/SGJobData_clean.parquet
+       OR leave blank to use an in-memory DuckDB instance
+    4. Click  Connect
+    5. In the SQL editor, you can now query the Parquet file directly:
+
+         SELECT category, COUNT(*) AS n, MEDIAN(salary) AS med_sal
+         FROM 'data/clean/SGJobData_clean.parquet'
+         WHERE salary_valid = true
+         GROUP BY category
+         ORDER BY n DESC
+         LIMIT 20;
+
+  Connecting DBGate to the raw CSV (for exploring before cleaning):
+
+    DuckDB can read CSVs directly without importing:
+
+         SELECT COUNT(*) FROM read_csv_auto('data/raw/SGJobData.csv');
+
+         SELECT * FROM read_csv_auto('data/raw/SGJobData.csv')
+         WHERE average_salary > 100000
+         LIMIT 20;
+
+  When to use DBGate vs the dashboard:
+
+    Use DBGate when:
+      - You want to write a one-off SQL query not in the dashboard
+      - You are investigating a specific anomaly row by row
+      - You need to verify a cleaning decision before coding it
+      - A stakeholder asks "how many X have Y?" and you need the answer fast
+
+    Use the dashboard when:
+      - You are presenting findings to policy makers or leadership
+      - You need interactive filtering, drill-downs, and tooltips
+      - You are tracking trends over time
+
+  NOTE: Do not save cleaned data back to the raw CSV from DBGate.
+  Always run data_cleaning.py to regenerate the Parquet from the raw source.
+  This preserves the reproducible pipeline.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CLEAN DATASET — COLUMN REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  37 columns in SGJobData_clean.parquet:
+
+  IDENTIFIERS
+  ───────────
+  job_id              str       Unique posting ID (MCF-YYYY-XXXXXXX format)
+  title               str       Job title as posted
+
+  DATES
+  ─────
+  posting_date        date      Original posting date
+  expiry_date         date      Listing expiry date (platform-set)
+  new_posting_date    date      Date of re-listing (only for reposted jobs)
+  listing_duration_days  int    Days listing was live (7/14/21/30 — platform-set,
+                                NOT time-to-fill)
+  days_to_repost      int       Days from original to re-listing (friction signal)
+
+  TEMPORAL GROUPERS
+  ─────────────────
+  year_month          datetime  First day of posting month (for time-series charts)
+  year                int       Posting year
+  quarter             str       Posting quarter (e.g. "2023Q3")
+  month_num           int       Posting month number (1–12)
+
+  ORGANISATION
+  ────────────
+  company             str       Company name (standardised UPPER)
+  is_posted_on_behalf bool      True if posted by a recruitment agency
+
+  ROLE ATTRIBUTES
+  ───────────────
+  category            str       Primary industry category (from JSON, first element)
+  categories_all      str       All categories, pipe-delimited (e.g. "IT|Engineering")
+  n_categories        int       Number of categories assigned
+  position_level      str       Seniority tier (9 levels from Fresh/entry to Senior Mgmt)
+  employmentTypes     str       Employment type (Permanent, Full Time, Contract, etc.)
+  min_exp_years       int       Minimum years experience required (capped at 30)
+
+  STATUS
+  ──────
+  job_status          str       Open / Closed / Re-open
+  repost_count        int       Number of times re-listed (0, 1, or 2)
+
+  DEMAND
+  ──────
+  vacancies           int       Number of open positions (capped at 99)
+  vacancies_raw       int       Original value (may be 999 sentinel)
+  vacancies_is_sentinel  int    1 if original = 999 (agency placeholder)
+
+  ENGAGEMENT
+  ──────────
+  applications        int       Total applications received
+  views               int       Total posting views
+  acr                 float     Application Conversion Rate = apps/views [0,1]
+                                NaN where views = 0
+
+  SALARY — RAW
+  ────────────
+  salary_minimum      int       Posted minimum salary (S$ per month)
+  salary_maximum      int       Posted maximum salary (S$ per month)
+  average_salary      float     (salary_min + salary_max) / 2  — raw, uncleaned
+
+  SALARY — CLEANED & ENGINEERED
+  ─────────────────────────────
+  salary              float     average_salary capped at p99 (S$16,500)
+                                NaN for salary_valid = False records
+                                USE THIS COLUMN in all salary analytics
+  salary_valid        bool      False if salary > S$100K or salary < S$500
+                                (data entry errors; record retained)
+  salary_range_width  int       salary_max - salary_min (pay transparency proxy)
+  has_salary_range    int       1 if width > 0 (range posted), 0 if point estimate
+  salary_band         category  7-tier band: <$2K / $2–3.5K / $3.5–5K / $5–7.5K
+                                             $7.5–10K / $10–15K / >$15K
+
+  KPI COLUMNS
+  ───────────
+  hfi                 float     Hiring Friction Index [0, 1]
+  ebi                 float     Experience Barrier Index (higher = more barrier)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  REQUIREMENTS.TXT CONTENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  streamlit>=1.35.0
+  duckdb>=0.10.0
+  pandas>=2.0.0
+  numpy>=1.24.0
+  plotly>=5.20.0
+  pyarrow>=14.0.0
+
+  pyarrow is required for reading and writing Parquet files.
+  All other packages are direct runtime dependencies of the dashboard.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  .GITIGNORE CONTENTS  (create this file in the project root)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Data files — too large for Git (use shared drive or DVC instead)
+  data/raw/*.csv
+  data/clean/*.parquet
+  data/clean/*.json
+
+  # Python environment
+  venv/
+  __pycache__/
+  *.pyc
+  .env
+
+  # Streamlit cache
+  .streamlit/
+
+  # OS files
+  .DS_Store
+  Thumbs.db
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Problem : "ModuleNotFoundError: No module named 'streamlit'"
+  Solution: Your virtual environment is not active.
+            Run:  source venv/bin/activate   (Mac/Linux)
+                  venv\Scripts\activate      (Windows)
+            Then: pip install -r requirements.txt
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : "FileNotFoundError: SGJobData.csv"
+  Solution: Check the file is at  data/raw/SGJobData.csv
+            Check you are running from the project root:
+              pwd   (Mac/Linux)    or    cd   (Windows)
+            Should show the sg-labour-intelligence/ folder path.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : "FileNotFoundError: SGJobData_clean.parquet"
+  Solution: You need to run the cleaning pipeline first:
+              python pipeline/data_cleaning.py
+            The dashboard requires the clean Parquet to exist.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : Dashboard is very slow to load
+  Solution: First load is always slow (1M rows being read + registered).
+            This is normal — wait 20–30 seconds.
+            After first load, all interactions are instant (data is in memory).
+            Do not close and reopen the browser tab repeatedly.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : "DuckDB Error: Conversion Error" during cleaning
+  Solution: The source CSV may have changed column names or structure.
+            Open data_cleaning.py, check the SQL in the raw ingest section
+            (Step 1), and compare column names against the CSV header row.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : Port 8501 already in use
+  Solution: Another Streamlit app is running. Either close it, or run on a
+            different port:
+              streamlit run dashboard/sg_labour_dashboard.py --server.port 8502
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : Charts appear blank / no data shown
+  Solution: Check your sidebar filters. If you have selected very narrow
+            salary range, date range, or specific categories with no data,
+            charts will be empty. Reset all filters by refreshing the page
+            (F5) or clicking the sidebar filter multiselects and selecting all.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  Problem : "ArrowInvalid" error when reading Parquet
+  Solution: The pyarrow version may be mismatched. Run:
+              pip install pyarrow --upgrade
+            Then re-run data_cleaning.py to regenerate the Parquet.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  QUICK-START CHECKLIST (print this page)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  First time only:
+  [ ] Install Python 3.10+
+  [ ] Create project folders (data/raw  data/clean  pipeline  dashboard)
+  [ ] Copy SGJobData.csv            →  data/raw/
+  [ ] Copy data_cleaning.py         →  pipeline/
+  [ ] Copy sg_labour_dashboard.py   →  dashboard/
+  [ ] Copy requirements.txt         →  project root
+  [ ] python -m venv venv
+  [ ] source venv/bin/activate   (or venv\Scripts\activate on Windows)
+  [ ] pip install -r requirements.txt
+
+  Every session:
+  [ ] cd sg-labour-intelligence
+  [ ] source venv/bin/activate
+
+  When data changes:
+  [ ] python pipeline/data_cleaning.py
+
+  To view the dashboard:
+  [ ] streamlit run dashboard/sg_labour_dashboard.py
+  [ ] Open browser at  http://localhost:8501
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  DESIGN DECISIONS — BRIEF RATIONALE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Why not clean data inside the dashboard?
+    The dashboard is read-only. Mixing cleaning logic with display logic makes
+    both harder to maintain. If cleaning changes, you rerun one script and
+    restart the dashboard. They are independent concerns.
+
+  Why Parquet instead of a DuckDB .db file?
+    Parquet is an open standard readable by Pandas, DuckDB, Spark, BigQuery,
+    Snowflake, R, Power BI, and Julia — no vendor lock-in. DuckDB .db files
+    are tied to the DuckDB version that created them and can break on upgrade.
+    Parquet also loads ~10x faster and compresses ~4x smaller than CSV.
+
+  Why DuckDB inside the dashboard if data is already in Pandas?
+    DuckDB SQL on a registered Pandas DataFrame is 3–5x faster than equivalent
+    Pandas groupby operations for large aggregations. It also keeps the query
+    logic readable — `GROUP BY category HAVING COUNT(*) >= 50` is instantly
+    understandable to anyone who knows SQL, while the equivalent Pandas chain
+    is 4–5 method calls.
+
+  Why @st.cache_resource for the engine?
+    @st.cache_resource stores the DuckDB connection and registered DataFrame
+    in memory for the lifetime of the Streamlit server process. Every sidebar
+    filter change triggers a rerun, but does NOT re-read the Parquet — it
+    queries the already-loaded in-memory table. This makes filter interactions
+    near-instant on 1M rows.
+
+  Why median instead of mean throughout?
+    Salary distribution is right-skewed (median S$3,800, mean S$4,769 — 26%
+    gap). Using mean in policy-facing charts would overstate typical wages and
+    misdirect SkillsFuture and PSG targeting. All salary aggregations use
+    MEDIAN(salary) in SQL.
+
+  Why use all-caps UPPER for company names?
+    Prevents "RECRUIT EXPRESS PTE LTD" and "Recruit Express Pte Ltd" being
+    counted as two separate companies. Standardisation before aggregation is
+    always the safer default.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONTACTS & REFERENCES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Data source   : MyCareersFuture (MCF) — Singapore's national jobs portal
+                  https://www.mycareersfuture.gov.sg/
+
+  Policy context: Ministry of Manpower (MOM)
+                  https://www.mom.gov.sg/
+
+                  Enterprise Singapore — Productivity Solutions Grant (PSG)
+                  https://www.enterprisesg.gov.sg/
+
+                  SkillsFuture Singapore
+                  https://www.skillsfuture.gov.sg/
+
+  DuckDB docs   : https://duckdb.org/docs/
+  Streamlit docs: https://docs.streamlit.io/
+  Parquet format: https://parquet.apache.org/
+
+===============================================================================
+  END OF GUIDE
+===============================================================================

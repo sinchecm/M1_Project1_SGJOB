@@ -1,0 +1,31 @@
+# Data files — too large for Git
+# Share via OneDrive / SharePoint / S3 / DVC instead
+data/raw/*.csv
+data/clean/*.parquet
+data/clean/*.json
+
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.egg-info/
+
+# Streamlit cache
+.streamlit/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
