@@ -57,33 +57,47 @@ CONT = ["#002B5C", "#6B3FA0", "#C8102E", "#F5A623"]
 
 st.markdown(f"""
 <style>
+/* ── Layout ─────────────────────────────────────────────────────────────── */
 .main .block-container {{ max-width:1440px; padding-top:1.2rem; }}
-.kpi {{ background:#fff; border-radius:12px; padding:16px 18px;
-        box-shadow:0 2px 8px rgba(0,0,0,.07); border-top:4px solid {C["red"]}; margin-bottom:4px; }}
+
+/* ── KPI cards — uses Streamlit theme variable, works dark + light ──────── */
+.kpi {{
+    background: var(--secondary-background-color);
+    border-radius:12px; padding:16px 18px;
+    box-shadow:0 2px 8px rgba(0,0,0,.15);
+    border-top:4px solid {C["red"]}; margin-bottom:4px;
+}}
 .kpi-val {{ font-size:1.85rem; font-weight:800; line-height:1.1; }}
 .kpi-lbl {{ font-size:.72rem; text-transform:uppercase; letter-spacing:.07em;
-            color:{C["grey"]}; margin-top:5px; }}
-.sec {{ font-weight:700; font-size:.95rem; color:{C["navy"]};
-        padding-bottom:5px; border-bottom:2px solid {C["red"]}; margin:14px 0 8px 0; }}
-.ibox {{ border-radius:8px; padding:11px 15px; margin:6px 0;
-         font-size:.85rem; line-height:1.45; }}
-.ibox-blue  {{ background:#EBF5FB; border-left:3px solid {C["sky"]}; }}
-.ibox-gold  {{ background:#FEF9E7; border-left:3px solid {C["gold"]}; }}
-.ibox-red   {{ background:#FDEDEC; border-left:3px solid {C["red"]}; }}
-.ibox-teal  {{ background:#E8F8F5; border-left:3px solid {C["teal"]}; }}
-.ibox-grey  {{ background:#F4F6F6; border-left:3px solid {C["grey"]}; }}
-#MainMenu, footer {{ visibility:hidden; }}
-/* Force sidebar toggle button to always be visible */
+            color:var(--text-color); opacity:0.6; margin-top:5px; }}
+
+/* ── Section headers ────────────────────────────────────────────────────── */
+.sec {{
+    font-weight:700; font-size:.95rem; color:var(--text-color);
+    padding-bottom:5px; border-bottom:2px solid {C["red"]}; margin:14px 0 8px 0;
+}}
+
+/* ── Insight boxes — rgba tints visible on both dark & light themes ─────── */
+.ibox {{
+    border-radius:8px; padding:11px 15px; margin:6px 0;
+    font-size:.85rem; line-height:1.45; color:var(--text-color);
+}}
+.ibox-blue  {{ background:rgba(41,128,185,0.18);  border-left:3px solid {C["sky"]}; }}
+.ibox-gold  {{ background:rgba(245,166,35,0.18);  border-left:3px solid {C["gold"]}; }}
+.ibox-red   {{ background:rgba(200,16,46,0.18);   border-left:3px solid {C["red"]}; }}
+.ibox-teal  {{ background:rgba(22,160,133,0.18);  border-left:3px solid {C["teal"]}; }}
+.ibox-grey  {{ background:rgba(108,117,125,0.18); border-left:3px solid {C["grey"]}; }}
+
+/* ── Sidebar toggle always visible ─────────────────────────────────────── */
 [data-testid="collapsedControl"] {{
-    display: block !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    background-color: {C["red"]} !important;
-    border-radius: 0 6px 6px 0 !important;
+    display:block !important; visibility:visible !important;
+    opacity:1 !important;
+    background-color:{C["red"]} !important;
+    border-radius:0 6px 6px 0 !important;
 }}
-[data-testid="collapsedControl"] svg {{
-    fill: white !important;
-}}
+[data-testid="collapsedControl"] svg {{ fill:white !important; }}
+
+#MainMenu, footer {{ visibility:hidden; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -112,32 +126,42 @@ def fmt_k(n):
 
 
 # ── Engine: load parquet → DuckDB ─────────────────────────────────────────────
-@st.cache_resource(show_spinner="⏳  Loading clean dataset …")
+@st.cache_resource(show_spinner="⏳  Connecting to dataset …")
 def get_engine(path: str):
-    df = pd.read_parquet(path)
+    """
+    Uses DuckDB VIEW on the parquet file — no full dataset loaded into RAM.
+    Queries read only the columns/rows they need, keeping memory under 300MB.
+    """
     con = duckdb.connect()
-    con.register("jobs", df)
-    return con, df
+    con.execute(f"CREATE OR REPLACE VIEW jobs AS SELECT * FROM read_parquet('{path}')")
+    # Load only filter metadata (small distinct queries, not the full 1M rows)
+    opts = {}
+    opts["min_date"]  = con.execute("SELECT MIN(posting_date)::VARCHAR FROM jobs").fetchone()[0]
+    opts["max_date"]  = con.execute("SELECT MAX(posting_date)::VARCHAR FROM jobs").fetchone()[0]
+    opts["status"]    = sorted(con.execute("SELECT DISTINCT job_status FROM jobs WHERE job_status IS NOT NULL ORDER BY 1").df()["job_status"].tolist())
+    opts["levels"]    = con.execute("SELECT DISTINCT position_level FROM jobs WHERE position_level IS NOT NULL ORDER BY 1").df()["position_level"].tolist()
+    opts["emp"]       = sorted(con.execute("SELECT DISTINCT employmentTypes FROM jobs WHERE employmentTypes IS NOT NULL ORDER BY 1").df()["employmentTypes"].tolist())
+    opts["cats"]      = sorted(con.execute("SELECT DISTINCT category FROM jobs WHERE category IS NOT NULL ORDER BY 1").df()["category"].tolist())
+    opts["s_lo"]      = int(con.execute("SELECT QUANTILE_CONT(salary, 0.01) FROM jobs WHERE salary_valid=true").fetchone()[0])
+    opts["s_hi"]      = int(con.execute("SELECT QUANTILE_CONT(salary, 0.99) FROM jobs WHERE salary_valid=true").fetchone()[0])
+    opts["n_total"]   = con.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    return con, opts
 
 try:
-    con, df_raw = get_engine(str(DATA_PATH))
+    con, OPTS = get_engine(str(DATA_PATH))
 except Exception as e:
     st.error(f"❌ Failed to load dataset: {e}")
     st.info(f"Looking for: `{DATA_PATH}`")
     st.stop()
 
 
-# ── Sidebar Filters ──────────────────────────────────────────────────────────
-d_min = df_raw["posting_date"].min().date()
-d_max = df_raw["posting_date"].max().date()
+# ── Sidebar Filters (uses pre-computed OPTS — no full dataset in RAM) ────────
+from datetime import date as _date
+d_min = _date.fromisoformat(OPTS["min_date"][:10])
+d_max = _date.fromisoformat(OPTS["max_date"][:10])
 level_order = ["Fresh/entry level","Non-executive","Junior Executive","Executive",
                "Senior Executive","Professional","Manager","Middle Management","Senior Management"]
-all_levels = [l for l in level_order if l in df_raw["position_level"].unique()]
-all_status = sorted(df_raw["job_status"].dropna().unique())
-all_emp    = sorted(df_raw["employmentTypes"].dropna().unique())
-all_cat    = sorted(df_raw["category"].unique())
-s_lo = int(df_raw["salary"].quantile(0.01))
-s_hi = int(df_raw["salary"].quantile(0.99))
+all_levels = [l for l in level_order if l in OPTS["levels"]]
 
 with st.sidebar:
     st.markdown("## 🇸🇬 SG Labour Intel")
@@ -145,15 +169,16 @@ with st.sidebar:
     st.divider()
     d_range    = st.date_input("📅 Date Range", (d_min, d_max),
                                min_value=d_min, max_value=d_max)
-    sel_status = st.multiselect("📌 Job Status", all_status, default=all_status)
+    sel_status = st.multiselect("📌 Job Status", OPTS["status"], default=OPTS["status"])
     sel_levels = st.multiselect("🏷 Position Level", all_levels, default=all_levels)
-    sel_emp    = st.multiselect("💼 Employment Type", all_emp,
+    sel_emp    = st.multiselect("💼 Employment Type", OPTS["emp"],
                                 default=["Permanent","Full Time","Contract"])
-    sel_cat    = st.multiselect("🏭 Industry Category", all_cat,
+    sel_cat    = st.multiselect("🏭 Industry Category", OPTS["cats"],
                                 placeholder="All categories (default)")
-    sal_rng    = st.slider("💰 Monthly Salary (S$)", s_lo, s_hi, (s_lo, s_hi), step=200)
+    sal_rng    = st.slider("💰 Monthly Salary (S$)", OPTS["s_lo"], OPTS["s_hi"],
+                           (OPTS["s_lo"], OPTS["s_hi"]), step=200)
     st.divider()
-    st.caption(f"Dataset: **{len(df_raw):,}** records")
+    st.caption(f"Dataset: **{OPTS['n_total']:,}** records")
     st.caption("**HFI** Hiring Friction Index · **ACR** App Conversion Rate · **EBI** Exp Barrier Index")
 
 
@@ -167,8 +192,25 @@ if sel_emp:     clauses.append(f"employmentTypes IN {sql_list(sel_emp)}")
 if sel_cat:     clauses.append(f"category IN {sql_list(sel_cat)}")
 WHERE = " AND ".join(clauses)
 
-df = con.execute(f"SELECT * FROM jobs WHERE {WHERE}").df()
-N  = len(df)
+# Compute all KPIs in one SQL query — no full dataset loaded into pandas
+kpi = con.execute(f"""
+    SELECT
+        COUNT(*)                                                    AS n,
+        SUM(CASE WHEN job_status='Open' THEN 1 ELSE 0 END)         AS open_n,
+        MEDIAN(salary)                                              AS med_sal,
+        SUM(vacancies)                                              AS tot_vac,
+        AVG(has_salary_range::double)                               AS rng_rate,
+        AVG(applications)                                           AS avg_apps,
+        AVG(hfi)                                                    AS avg_hfi,
+        AVG(acr)                                                    AS avg_acr,
+        AVG(ebi)                                                    AS avg_ebi,
+        AVG(CASE WHEN repost_count>0 THEN 1.0 ELSE 0.0 END)        AS repost_rt,
+        AVG(CASE WHEN has_salary_range=1 THEN acr END)              AS acr_range,
+        AVG(CASE WHEN has_salary_range=0 THEN acr END)              AS acr_point,
+        QUANTILE_CONT(salary, 0.98)                                 AS sal_p98
+    FROM jobs WHERE {WHERE}
+""").df().iloc[0]
+N = int(kpi["n"])
 
 
 # ── Page header ───────────────────────────────────────────────────────────────
@@ -195,11 +237,11 @@ with tab1:
     st.caption("**For:** MOM Policy Analysts · Enterprise Singapore · National Planners  |  Macro demand, salary benchmarks, sector health")
 
     k1,k2,k3,k4,k5,k6 = st.columns(6)
-    open_n   = int((df["job_status"]=="Open").sum())
-    med_sal  = df["salary"].median()
-    tot_vac  = int(df["vacancies"].sum())
-    rng_rate = df["has_salary_range"].mean()*100
-    avg_apps = df["applications"].mean()
+    open_n   = int(kpi["open_n"])
+    med_sal  = float(kpi["med_sal"])
+    tot_vac  = int(kpi["tot_vac"])
+    rng_rate = float(kpi["rng_rate"])*100
+    avg_apps = float(kpi["avg_apps"])
 
     kpi(k1, fmt_k(N),            "Total Postings",            C["navy"])
     kpi(k2, fmt_k(open_n),       "Open / Active Roles",       C["red"])
@@ -225,7 +267,7 @@ with tab1:
                      template="plotly_white")
         fig.update_coloraxes(colorbar_title="Median<br>Salary (S$)")
         fig.update_layout(height=520, margin=dict(l=0,r=10,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("💡 <b>Policy signal:</b> Dark-blue = high-volume / lower-wage sectors — prime PSG automation candidates where technology reduces labour dependency without cutting output.", "blue")
 
     with c2:
@@ -239,7 +281,7 @@ with tab1:
         fig.update_traces(textposition="inside", textinfo="percent+label",
                           hovertemplate="%{label}<br>%{value:,} posts (%{percent})")
         fig.update_layout(height=290, showlegend=False, margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         sec("Employment Type Mix")
         emp_df = con.execute(f"""
@@ -251,14 +293,14 @@ with tab1:
                       color_discrete_sequence=[C["navy"]], template="plotly_white",
                       labels={"n":"Postings","etype":""})
         fig2.update_layout(height=260, margin=dict(l=0,r=10,t=0,b=0))
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     c3, c4 = st.columns([4,6])
     with c3:
         sec("Monthly Salary Distribution (S$) — valid records only")
         sal_df = con.execute(f"""
             SELECT salary FROM jobs
-            WHERE {WHERE} AND salary BETWEEN 500 AND {int(df['salary'].quantile(0.98))}
+            WHERE {WHERE} AND salary BETWEEN 500 AND {int(kpi['sal_p98'])}
         """).df()
         med_v = sal_df["salary"].median()
         p25_v = sal_df["salary"].quantile(0.25)
@@ -273,7 +315,7 @@ with tab1:
                           annotation_font_color=col, annotation_font_size=10)
         fig.update_traces(hovertemplate="S$%{x:,.0f}<br>Count: %{y:,}")
         fig.update_layout(height=360, margin=dict(l=0,r=0,t=0,b=0), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox(f"📌 <b>EDA:</b> Right-skewed — IQR S${p25_v:,.0f}–S${p75_v:,.0f}. All charts use "
              f"<b>median</b>, not mean, to avoid distortion from senior-tier outliers. "
              f"Policy focus: workers below S$2,900 (P25) for SkillsFuture subsidies.", "blue")
@@ -292,7 +334,7 @@ with tab1:
                      hover_data={"total_vac":True,"med_salary":":,.0f"}, template="plotly_white")
         fig.update_coloraxes(colorbar_title="Median<br>Salary (S$)")
         fig.update_layout(height=520, margin=dict(l=0,r=10,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     sec("Salary Benchmark by Position Level — Median with Interquartile Range")
     sal_lv = con.execute(f"""
@@ -313,7 +355,7 @@ with tab1:
     ))
     fig.update_layout(height=340, template="plotly_white", yaxis_title="Monthly Salary (S$)",
                       margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     ibox("💡 Error bars = IQR (P25–P75). Wide IQR at Manager/Senior levels = intense compensation competition. HR teams benchmark against P75 to retain top performers.", "gold")
 
 
@@ -325,12 +367,12 @@ with tab2:
     st.caption("**For:** Business Leaders · HR Professionals · Workforce Development Bodies  |  Mismatch diagnosis, automation targeting, over-specification detection")
 
     b1,b2,b3,b4,b5 = st.columns(5)
-    avg_hfi   = float(df["hfi"].mean())
-    avg_acr   = float(df["acr"].mean(skipna=True))*100
-    avg_ebi   = float(df["ebi"].mean(skipna=True))
-    repost_rt = float((df["repost_count"]>0).mean())*100
-    acr_range = float(df.loc[df["has_salary_range"]==1,"acr"].mean(skipna=True))*100
-    acr_point = float(df.loc[df["has_salary_range"]==0,"acr"].mean(skipna=True))*100
+    avg_hfi   = float(kpi["avg_hfi"])
+    avg_acr   = float(kpi["avg_acr"] or 0)*100
+    avg_ebi   = float(kpi["avg_ebi"] or 0)
+    repost_rt = float(kpi["repost_rt"])*100
+    acr_range = float(kpi["acr_range"] or 0)*100
+    acr_point = float(kpi["acr_point"] or 0)*100
     rng_lift  = acr_range - acr_point
 
     kpi(b1, f"{avg_hfi:.3f}",    "Avg Hiring Friction Index",       C["red"])
@@ -360,7 +402,7 @@ with tab2:
                       annotation_text=f"Market avg: {avg_hfi:.3f}", annotation_font_color=C["navy"])
         fig.update_coloraxes(showscale=False)
         fig.update_layout(height=480, margin=dict(l=0,r=10,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("🚨 <b>Policy:</b> Sectors above market-average HFI = prime PSG funding candidates. Persistent friction signals roles where automation delivers highest productivity return.", "red")
 
     with c2:
@@ -380,7 +422,7 @@ with tab2:
         fig.update_xaxes(tickformat=".0%")
         fig.update_coloraxes(showscale=False)
         fig.update_layout(height=480, margin=dict(l=0,r=10,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("💡 <b>HR:</b> Low ACR + adequate views = posting quality or pay band problem — not a talent shortage. Fix JD language and salary range first before escalating to PSG.", "blue")
 
     sec("Experience Barrier Analysis — Years Required vs. Salary Offered  (bubble = vacancy volume)")
@@ -413,7 +455,7 @@ with tab2:
         fig.add_annotation(x=x, y=y, text=txt, showarrow=False, font=dict(size=9, color=col))
     fig.update_coloraxes(colorbar_title="EBI")
     fig.update_layout(height=520, margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     ibox("⚠️ <b>EDA:</b> Experience capped at 30 yrs after finding 39 records requesting 31–88 years (data errors). Bottom-right quadrant = over-specification trap: firms blocking their own talent pipeline. Bubble = total vacancies → larger = higher urgency.", "gold")
 
     c3, c4 = st.columns([5,5])
@@ -433,7 +475,7 @@ with tab2:
                      template="plotly_white")
         fig.update_coloraxes(colorbar_title="Avg HFI")
         fig.update_layout(height=480, margin=dict(l=0,r=10,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with c4:
         sec("Pay Range vs Point Estimate — ACR Impact by Sector")
@@ -458,7 +500,7 @@ with tab2:
         fig.update_layout(barmode="group", height=380, template="plotly_white",
                           legend=dict(x=0.01,y=0.99),
                           margin=dict(l=0,r=0,t=0,b=0), xaxis_tickangle=-30)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox(f"💡 <b>EDA finding:</b> Salary range postings achieve <b>+{rng_lift:.1f}%</b> higher ACR than point estimates. "
              "The 1.4% point-estimate postings (where min=max) are a quick-win improvement target for HR teams.", "teal")
 
@@ -482,7 +524,7 @@ with tab2:
     fig.update_yaxes(title_text="Avg HFI", secondary_y=True)
     fig.update_layout(height=350, template="plotly_white", hovermode="x unified",
                       legend=dict(x=0.01,y=0.98), margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     ibox("⚠️ <b>EDA:</b> Friction peaks at S$2–5K bands — mass-market segment. Raising offer bands modestly at S$2–3.5K tier cuts repost cycles more cost-effectively than large senior salary jumps.", "gold")
 
 
@@ -513,7 +555,7 @@ with tab3:
     fig.update_yaxes(title_text="Total Vacancies", secondary_y=True)
     fig.update_layout(height=380, template="plotly_white", hovermode="x unified",
                       legend=dict(x=0.01,y=0.98), margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     ibox("💡 <b>EDA:</b> Oct 2022–Mar 2023 is a platform ramp-up (172 → 70K posts/month). "
          "<b>Do not interpret as demand growth.</b> Vacancy-to-posting gap is the real leading indicator.", "blue")
 
@@ -533,7 +575,7 @@ with tab3:
         fig.update_layout(height=370, hovermode="x unified",
                           legend=dict(x=0.01,y=0.98), margin=dict(l=0,r=0,t=0,b=0))
         fig.update_traces(hovertemplate="%{y:,.0f}")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("💡 Gradient widening = healthy productivity-linked wage growth. Compression (lines converging) = retention risk — signal for talent pressure ahead.", "blue")
 
     with c2:
@@ -559,7 +601,7 @@ with tab3:
         fig.add_vline(x=0, line_color=C["grey"], line_width=1)
         fig.update_layout(height=370, template="plotly_white",
                           xaxis_title="% Change", margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("💡 Sustained growth (green) = structural demand → permanent SkillsFuture pipelines. Declines (red) = automation displacement → retraining priority.", "gold")
 
     c3, c4 = st.columns(2)
@@ -584,7 +626,7 @@ with tab3:
         fig.update_yaxes(title_text="Repost Rate", tickformat=".0%", secondary_y=True)
         fig.update_layout(height=350, template="plotly_white", hovermode="x unified",
                           legend=dict(x=0.01,y=0.98), margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("💡 Rising HFI = leading indicator of upcoming wage pressure — visible 1–2 quarters before official MOM employment statistics.", "blue")
 
     with c4:
@@ -603,7 +645,7 @@ with tab3:
                       annotation_text=f"Mean: {mean_days:.0f} days",
                       annotation_font_color=C["navy"])
         fig.update_layout(height=350, margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox(f"💡 <b>EDA:</b> Mean {mean_days:.0f}-day repost gap = employers wait ~2 full 30-day listing cycles before retrying. "
              "Actual vacancy duration is 2–3× the listing period — friction is chronically underestimated.", "gold")
 
@@ -624,7 +666,7 @@ with tab3:
                     template="plotly_white")
     fig.update_traces(hovertemplate="%{y}<br>%{x}<br>Intensity: %{z:.2f}<extra></extra>")
     fig.update_layout(height=520, margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     ibox("💡 Row-normalised: each sector's own hiring rhythm. Uniformly dark = structural demand → permanent SkillsFuture pipelines. Single dark quarter = cyclical → short-cycle training. 2022Q4 is artificially light (platform ramp-up).", "teal")
 
 
@@ -684,7 +726,7 @@ with tab4:
             "Views likely undercounted (external channels). Record otherwise valid.",
             "Prevents future duplication risk.",
         ],
-    }), use_container_width=True, hide_index=True)
+    }), width='stretch', hide_index=True)
 
     st.markdown("")
     sec("8 Key EDA Findings That Shaped Dashboard Design")
@@ -739,7 +781,7 @@ with tab4:
 
     for colour, title, body in eda_findings:
         st.markdown(
-            f'<div class="ibox" style="background:#fff;border-left:5px solid {colour};'
+            f'<div class="ibox" style="background:var(--secondary-background-color);border-left:5px solid {colour};'
             f'box-shadow:0 1px 5px rgba(0,0,0,.06);margin-bottom:10px">'
             f'<div style="font-weight:800;color:{colour};margin-bottom:4px">{title}</div>'
             f'<div style="color:#2C3E50">{body}</div></div>',
@@ -761,7 +803,7 @@ with tab4:
         fig.add_vline(x=100_000, line_dash="dash", line_color=C["red"],
                       annotation_text="> S$100K flag", annotation_font_size=9)
         fig.update_layout(height=300, margin=dict(l=0,r=0,t=0,b=0), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with ch2:
         st.markdown("**Application count — zero-inflation (63% of posts have 0 applications)**")
@@ -774,7 +816,7 @@ with tab4:
                      template="plotly_white")
         fig.update_layout(height=300, margin=dict(l=0,r=0,t=0,b=0))
         fig.update_traces(hovertemplate="Apps=%{x}<br>Count=%{y:,}")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     ch3, ch4 = st.columns(2)
     with ch3:
@@ -789,7 +831,7 @@ with tab4:
             fig.add_vline(x=xv, line_dash="dot", line_color=C["red"], opacity=0.6,
                           annotation_text=f"{xv}d", annotation_font_size=9)
         fig.update_layout(height=300, margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox("7/14/21/30-day spikes are platform-enforced — NOT vacancy fill time. Renamed to listing_duration_days.", "grey")
 
     with ch4:
@@ -804,7 +846,7 @@ with tab4:
         fig.add_vline(x=mean_d, line_dash="dash", line_color=C["navy"],
                       annotation_text=f"Mean: {mean_d:.0f} days")
         fig.update_layout(height=300, margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         ibox(f"Mean {mean_d:.0f} days ≈ 2 failed 30-day listing cycles. Actual vacancy duration is 2–3× the platform listing period.", "grey")
 
 
