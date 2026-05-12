@@ -193,7 +193,7 @@ if sel_cat:     clauses.append(f"category IN {sql_list(sel_cat)}")
 WHERE = " AND ".join(clauses)
 
 # Compute all KPIs in one SQL query — no full dataset loaded into pandas
-kpi = con.execute(f"""
+metrics = con.execute(f"""
     SELECT
         COUNT(*)                                                    AS n,
         SUM(CASE WHEN job_status='Open' THEN 1 ELSE 0 END)         AS open_n,
@@ -300,7 +300,7 @@ with tab1:
         sec("Monthly Salary Distribution (S$) — valid records only")
         sal_df = con.execute(f"""
             SELECT salary FROM jobs
-            WHERE {WHERE} AND salary BETWEEN 500 AND {int(kpi['sal_p98'])}
+            WHERE {WHERE} AND salary BETWEEN 500 AND {int(metrics['sal_p98'])}
         """).df()
         med_v = sal_df["salary"].median()
         p25_v = sal_df["salary"].quantile(0.25)
