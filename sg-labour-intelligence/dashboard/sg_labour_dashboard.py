@@ -124,6 +124,399 @@ def fmt_k(n):
     if n >= 1_000:     return f"{n/1e3:.0f}K"
     return f"{int(n):,}"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CHATBOT — paste this block AFTER the existing helper functions (ibox, sec etc.)
+# and BEFORE the sidebar section
+# ─────────────────────────────────────────────────────────────────────────────
+
+import requests as _req   # stdlib http — avoids adding anthropic SDK to deps
+
+def _get_api_key():
+    try:
+        return st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        import os
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+
+# ── Tool definitions ──────────────────────────────────────────────────────────
+CHAT_TOOLS = [
+    {
+        "name": "get_market_overview",
+        "description": (
+            "Returns overall market KPIs: total postings, open roles, median salary, "
+            "total vacancies, avg HFI, avg ACR, repost rate, avg EBI. "
+            "Call this for general market-health questions."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_sector_ranking",
+        "description": (
+            "Returns top or bottom N sectors ranked by a metric. "
+            "Use for: 'which sectors have highest friction?', 'best-paying industries?', "
+            "'lowest ACR?', 'most vacancies?'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": ["hfi", "acr", "salary", "postings", "vacancies", "ebi"],
+                    "description": "hfi=Hiring Friction Index, acr=App Conversion Rate, "
+                                   "salary=median monthly salary (S$), ebi=Experience Barrier Index",
+                },
+                "order": {
+                    "type": "string",
+                    "enum": ["highest", "lowest"],
+                    "description": "Sort direction",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Sectors to return (default 5, max 15)",
+                },
+            },
+            "required": ["metric", "order"],
+        },
+    },
+    {
+        "name": "get_sector_detail",
+        "description": (
+            "Returns full stats for ONE named sector: HFI, ACR, EBI, salary P25/median/P75, "
+            "vacancies, repost rate, avg experience required, top 5 job titles."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sector": {
+                    "type": "string",
+                    "description": (
+                        "Sector name (partial match OK). Examples: "
+                        "Information Technology, Banking and Finance, Healthcare / Pharmaceutical, "
+                        "Engineering, Admin / Secretarial, Customer Service, Logistics / Supply Chain, "
+                        "Human Resources, Sales / Retail, F&B, Consulting, Education and Training, "
+                        "Legal, Social Services, Manufacturing, Marketing / Public Relations"
+                    ),
+                }
+            },
+            "required": ["sector"],
+        },
+    },
+    {
+        "name": "get_salary_trend",
+        "description": (
+            "Returns monthly median salary trend. Optionally filtered by position level. "
+            "Use for salary growth questions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "position_level": {
+                    "type": "string",
+                    "description": (
+                        "Optional. One of: Fresh/entry level, Non-executive, Junior Executive, "
+                        "Executive, Senior Executive, Professional, Manager, "
+                        "Middle Management, Senior Management. Leave empty for all."
+                    ),
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_posting_trend",
+        "description": (
+            "Returns monthly job posting volumes, vacancies, and avg HFI. "
+            "Optionally filtered by sector."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sector": {
+                    "type": "string",
+                    "description": "Optional sector name (partial match OK). Empty = all sectors.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_company_stats",
+        "description": "Returns top companies ranked by vacancies, friction, or posting volume.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "order_by": {
+                    "type": "string",
+                    "enum": ["vacancies", "hfi", "postings"],
+                    "description": "Ranking method",
+                },
+                "limit": {"type": "integer", "description": "Number of companies (default 10)"},
+            },
+            "required": ["order_by"],
+        },
+    },
+]
+
+
+# ── Tool execution ────────────────────────────────────────────────────────────
+def _safe_str(s: str) -> str:
+    """Sanitise a string for SQL embedding."""
+    return str(s).replace("'", "''").replace(";", "").replace("--", "")[:100]
+
+
+def execute_tool(name: str, inp: dict, con, WHERE: str) -> str:
+    try:
+        if name == "get_market_overview":
+            r = con.execute(f"""
+                SELECT
+                    COUNT(*)                                                     AS n,
+                    SUM(CASE WHEN job_status='Open' THEN 1 ELSE 0 END)          AS open_n,
+                    ROUND(MEDIAN(salary), 0)                                     AS med_sal,
+                    ROUND(AVG(salary), 0)                                        AS mean_sal,
+                    SUM(vacancies)                                               AS tot_vac,
+                    ROUND(AVG(hfi), 3)                                           AS avg_hfi,
+                    ROUND(AVG(acr)*100, 1)                                       AS avg_acr,
+                    ROUND(AVG(CASE WHEN repost_count>0 THEN 1.0 ELSE 0 END)*100,1) AS repost_pct,
+                    ROUND(AVG(ebi), 1)                                           AS avg_ebi
+                FROM jobs WHERE {WHERE}
+            """).df().iloc[0]
+            return (
+                f"Market overview (current filter):\n"
+                f"• Total postings: {int(r['n']):,}\n"
+                f"• Open roles: {int(r['open_n']):,}\n"
+                f"• Median monthly salary: S${r['med_sal']:,.0f}\n"
+                f"• Mean monthly salary:   S${r['mean_sal']:,.0f}\n"
+                f"• Total vacancies: {int(r['tot_vac']):,}\n"
+                f"• Avg HFI: {r['avg_hfi']:.3f}  (market avg ~0.265; higher = more friction)\n"
+                f"• Avg ACR: {r['avg_acr']:.1f}%  (higher = better applicant conversion)\n"
+                f"• Repost rate: {r['repost_pct']:.1f}%\n"
+                f"• Avg EBI: {r['avg_ebi']:.1f}  (higher = more experience demanded vs salary)"
+            )
+
+        elif name == "get_sector_ranking":
+            metric = inp.get("metric", "hfi")
+            order  = inp.get("order", "highest")
+            limit  = min(int(inp.get("limit", 5)), 15)
+            col_map = {
+                "hfi":      "AVG(hfi)",
+                "acr":      "AVG(acr)",
+                "salary":   "MEDIAN(salary)",
+                "postings": "COUNT(*)",
+                "vacancies":"SUM(vacancies)",
+                "ebi":      "AVG(ebi)",
+            }
+            agg = col_map.get(metric, "AVG(hfi)")
+            srt = "DESC" if order == "highest" else "ASC"
+            df = con.execute(f"""
+                SELECT category,
+                       COUNT(*)                                                       AS postings,
+                       ROUND(MEDIAN(salary), 0)                                       AS med_sal,
+                       ROUND(AVG(hfi), 3)                                             AS avg_hfi,
+                       ROUND(AVG(acr)*100, 1)                                         AS avg_acr,
+                       ROUND(AVG(ebi), 1)                                             AS avg_ebi,
+                       SUM(vacancies)                                                 AS tot_vac
+                FROM jobs WHERE {WHERE}
+                GROUP BY category HAVING postings >= 50
+                ORDER BY {agg} {srt}
+                LIMIT {limit}
+            """).df()
+            lines = [f"Top {limit} sectors by {metric} ({order}):"]
+            for i, row in df.iterrows():
+                lines.append(
+                    f"  {i+1}. {row['category']}\n"
+                    f"     HFI={row['avg_hfi']:.3f} | ACR={row['avg_acr']:.1f}% | "
+                    f"Salary=S${row['med_sal']:,.0f} | Posts={int(row['postings']):,} | "
+                    f"Vacancies={int(row['tot_vac']):,} | EBI={row['avg_ebi']:.1f}"
+                )
+            return "\n".join(lines)
+
+        elif name == "get_sector_detail":
+            s = _safe_str(inp.get("sector", ""))
+            r = con.execute(f"""
+                SELECT category,
+                       COUNT(*)                                                       AS postings,
+                       ROUND(MEDIAN(salary), 0)                                       AS med_sal,
+                       ROUND(QUANTILE_CONT(salary, 0.25), 0)                          AS p25,
+                       ROUND(QUANTILE_CONT(salary, 0.75), 0)                          AS p75,
+                       ROUND(AVG(hfi), 3)                                             AS avg_hfi,
+                       ROUND(AVG(acr)*100, 1)                                         AS avg_acr,
+                       ROUND(AVG(ebi), 1)                                             AS avg_ebi,
+                       SUM(vacancies)                                                 AS tot_vac,
+                       ROUND(AVG(CASE WHEN repost_count>0 THEN 1.0 ELSE 0 END)*100,1) AS repost_pct,
+                       ROUND(AVG(min_exp_years), 1)                                   AS avg_exp
+                FROM jobs WHERE {WHERE} AND LOWER(category) LIKE LOWER('%{s}%')
+                GROUP BY category ORDER BY postings DESC LIMIT 1
+            """).df()
+            if r.empty:
+                return f"No sector matched '{s}'. Check spelling or try a partial name."
+            row = r.iloc[0]
+            titles = con.execute(f"""
+                SELECT title, COUNT(*) AS n, ROUND(MEDIAN(salary),0) AS sal
+                FROM jobs WHERE {WHERE} AND LOWER(category) LIKE LOWER('%{s}%')
+                GROUP BY title ORDER BY n DESC LIMIT 5
+            """).df()
+            t_lines = "\n".join(
+                f"     {i+1}. {r2['title']} ({int(r2['n'])} posts, S${r2['sal']:,.0f})"
+                for i, r2 in titles.iterrows()
+            )
+            return (
+                f"Sector: {row['category']}\n"
+                f"• Postings: {int(row['postings']):,}  |  Vacancies: {int(row['tot_vac']):,}\n"
+                f"• Salary: S${row['p25']:,.0f} (P25) → S${row['med_sal']:,.0f} (median) → S${row['p75']:,.0f} (P75)\n"
+                f"• HFI: {row['avg_hfi']:.3f}  (market avg 0.265)\n"
+                f"• ACR: {row['avg_acr']:.1f}%\n"
+                f"• EBI: {row['avg_ebi']:.1f}\n"
+                f"• Repost rate: {row['repost_pct']:.1f}%\n"
+                f"• Avg min. experience required: {row['avg_exp']:.1f} years\n"
+                f"• Top job titles:\n{t_lines}"
+            )
+
+        elif name == "get_salary_trend":
+            lvl = _safe_str(inp.get("position_level", ""))
+            lf  = f"AND position_level = '{lvl}'" if lvl else ""
+            df = con.execute(f"""
+                SELECT year_month, ROUND(MEDIAN(salary),0) AS med_sal, COUNT(*) AS n
+                FROM jobs WHERE {WHERE} {lf}
+                GROUP BY year_month ORDER BY year_month
+            """).df()
+            df["ym"] = pd.to_datetime(df["year_month"]).dt.strftime("%Y-%m")
+            label = f"for {lvl}" if lvl else "(all levels)"
+            lines = [f"Monthly median salary trend {label}:"]
+            for _, row in df.iterrows():
+                lines.append(f"  {row['ym']}: S${row['med_sal']:,.0f}  ({int(row['n']):,} posts)")
+            if len(df) > 1:
+                chg = ((df.iloc[-1]["med_sal"] - df.iloc[0]["med_sal"]) / df.iloc[0]["med_sal"]) * 100
+                lines.append(f"\nOverall change: {chg:+.1f}% from {df.iloc[0]['ym']} to {df.iloc[-1]['ym']}")
+            return "\n".join(lines)
+
+        elif name == "get_posting_trend":
+            s  = _safe_str(inp.get("sector", ""))
+            sf = f"AND LOWER(category) LIKE LOWER('%{s}%')" if s else ""
+            df = con.execute(f"""
+                SELECT year_month, COUNT(*) AS posts, SUM(vacancies) AS vac,
+                       ROUND(AVG(hfi),3) AS avg_hfi
+                FROM jobs WHERE {WHERE} {sf}
+                GROUP BY year_month ORDER BY year_month
+            """).df()
+            df["ym"] = pd.to_datetime(df["year_month"]).dt.strftime("%Y-%m")
+            label = f"for {s}" if s else "(all sectors)"
+            lines = [f"Monthly posting trend {label}:"]
+            for _, row in df.iterrows():
+                lines.append(
+                    f"  {row['ym']}: {int(row['posts']):,} posts | "
+                    f"{int(row['vac']):,} vacancies | HFI {row['avg_hfi']:.3f}"
+                )
+            return "\n".join(lines)
+
+        elif name == "get_company_stats":
+            ob    = {"vacancies": "SUM(vacancies)", "hfi": "AVG(hfi)", "postings": "COUNT(*)"}
+            order_col = ob.get(inp.get("order_by", "vacancies"), "SUM(vacancies)")
+            limit = min(int(inp.get("limit", 10)), 20)
+            df = con.execute(f"""
+                SELECT company, COUNT(*) AS posts, SUM(vacancies) AS tot_vac,
+                       ROUND(AVG(hfi),3) AS avg_hfi,
+                       ROUND(MEDIAN(salary),0) AS med_sal,
+                       ROUND(AVG(acr)*100,1) AS avg_acr
+                FROM jobs WHERE {WHERE} AND company IS NOT NULL
+                GROUP BY company HAVING posts >= 10
+                ORDER BY {order_col} DESC LIMIT {limit}
+            """).df()
+            lines = [f"Top {limit} companies by {inp.get('order_by','vacancies')}:"]
+            for i, row in df.iterrows():
+                lines.append(
+                    f"  {i+1}. {row['company']}\n"
+                    f"     Vacancies={int(row['tot_vac']):,} | Posts={int(row['posts']):,} | "
+                    f"HFI={row['avg_hfi']:.3f} | Salary=S${row['med_sal']:,.0f} | ACR={row['avg_acr']:.1f}%"
+                )
+            return "\n".join(lines)
+
+        return f"Unknown tool: {name}"
+    except Exception as e:
+        return f"Tool error ({name}): {e}"
+
+
+# ── Tool-use chat loop ────────────────────────────────────────────────────────
+def run_chatbot(messages: list, con, WHERE: str, OPTS: dict,
+                filter_desc: str = "") -> str:
+    api_key = _get_api_key()
+    if not api_key:
+        return (
+            "❌ **API key not set.**\n\n"
+            "To enable the chatbot:\n"
+            "1. Go to your Streamlit Cloud app → **Manage app** → **Settings** → **Secrets**\n"
+            "2. Add:\n```toml\nANTHROPIC_API_KEY = \"sk-ant-...\"\n```\n"
+            "3. Save and reboot the app.\n\n"
+            "Or locally, set the `ANTHROPIC_API_KEY` environment variable."
+        )
+
+    system = f"""You are an expert Singapore labour market analyst for the MCF Job Postings Dashboard.
+
+Dataset: {OPTS['n_total']:,} MCF job postings, Oct 2022–May 2024, 40 industry sectors.
+Current user filters: {filter_desc or WHERE[:200]}
+
+Key metric definitions:
+• HFI (Hiring Friction Index) [0–1]: 0.40×(reposted) + 0.35×(fewer than 3 applications) + 0.25×(more than 5 vacancies). Market avg ≈ 0.265. Higher = harder to fill.
+• ACR (Application Conversion Rate): applications ÷ views [0–1]. Market avg ≈ 5.8%. Low = posting quality or pay band problem.
+• EBI (Experience Barrier Index): min_exp ÷ log(salary) × 1000. High = over-specified role relative to salary offered.
+• All salaries are monthly Singapore dollars (S$).
+
+Rules:
+- Always call at least one tool before answering numerical questions.
+- Lead with the key number, then provide context and a brief actionable insight.
+- Be concise. Use bullet points for lists of sectors or companies.
+- If a sector name is ambiguous, use get_sector_detail with the partial name.
+- Do not fabricate numbers. If data is unavailable, say so clearly.
+"""
+
+    api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+    endpoint = "https://api.anthropic.com/v1/messages"
+    headers  = {
+        "x-api-key":         api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type":      "application/json",
+    }
+
+    for _ in range(6):   # max tool-use iterations
+        payload = {
+            "model":      "claude-sonnet-4-20250514",
+            "max_tokens": 1024,
+            "system":     system,
+            "tools":      CHAT_TOOLS,
+            "messages":   api_messages,
+        }
+        resp = _req.post(endpoint, headers=headers, json=payload, timeout=30)
+        if resp.status_code != 200:
+            return f"API error {resp.status_code}: {resp.text[:300]}"
+
+        data      = resp.json()
+        stop      = data.get("stop_reason")
+        content   = data.get("content", [])
+
+        if stop == "end_turn":
+            return next((b["text"] for b in content if b["type"] == "text"), "No response.")
+
+        if stop == "tool_use":
+            # Add assistant turn
+            api_messages.append({"role": "assistant", "content": content})
+            # Execute each tool call
+            results = []
+            for blk in content:
+                if blk["type"] == "tool_use":
+                    result = execute_tool(blk["name"], blk["input"], con, WHERE)
+                    results.append({
+                        "type":        "tool_result",
+                        "tool_use_id": blk["id"],
+                        "content":     result,
+                    })
+            api_messages.append({"role": "user", "content": results})
+        else:
+            break
+
+    return "I wasn't able to complete the analysis. Please rephrase your question."
+
+
+
+
 
 # ── Engine: load parquet → DuckDB ─────────────────────────────────────────────
 @st.cache_resource(show_spinner="⏳  Connecting to dataset …")
@@ -213,6 +606,15 @@ metrics = con.execute(f"""
 N = int(metrics["n"])
 
 
+# ── Human-readable filter description for chatbot system prompt ──────────────
+_date_str  = f"{d_range[0]} to {d_range[1]}" if len(d_range)==2 else "all dates"
+_status_str = ", ".join(sel_status) if sel_status else "all statuses"
+_level_str  = f"{len(sel_levels)} levels selected" if sel_levels else "all levels"
+_cat_str    = ", ".join(sel_cat[:3]) + ("…" if len(sel_cat)>3 else "") if sel_cat else "all sectors"
+FILTER_DESC = (f"Date {_date_str} | Status: {_status_str} | "
+               f"Levels: {_level_str} | Sectors: {_cat_str} | "
+               f"Salary S${sal_rng[0]:,}–S${sal_rng[1]:,}/mo")
+
 # ── Page header ───────────────────────────────────────────────────────────────
 st.markdown(
     "## 🇸🇬 Singapore Labour Market Intelligence Dashboard\n"
@@ -221,11 +623,12 @@ st.markdown(
 st.caption(f"Showing **{N:,}** salary-valid records · Use sidebar to filter by date, sector, level or salary band")
 st.divider()
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊  National Overview",
     "🔬  Bottlenecks & Friction",
     "📈  Time Trends",
     "🔎  Data Quality & EDA",
+    "🤖  AI Assistant",
 ])
 
 
@@ -849,6 +1252,77 @@ with tab4:
         st.plotly_chart(fig, width='stretch')
         ibox(f"Mean {mean_d:.0f} days ≈ 2 failed 30-day listing cycles. Actual vacancy duration is 2–3× the platform listing period.", "grey")
 
+
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  TAB 5 — AI ASSISTANT                                                    ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+with tab5:
+    st.markdown("### 🤖 Labour Market AI Assistant")
+    st.caption(
+        "Ask about HFI, salary trends, sector comparisons, top companies and more. "
+        "Answers are pulled live from the dataset using your current sidebar filters."
+    )
+
+    # Example prompt buttons
+    EXAMPLES = [
+        "What is the market overview?",
+        "Which sectors have the highest hiring friction?",
+        "Tell me about the IT sector",
+        "What is the salary trend for Managers?",
+        "Which companies have the most unfilled vacancies?",
+        "Which sectors have the lowest ACR?",
+    ]
+    st.markdown("**Quick questions:**")
+    ecols = st.columns(3)
+    for i, ex in enumerate(EXAMPLES):
+        if ecols[i % 3].button(ex, key=f"ex_{i}", use_container_width=True):
+            st.session_state["pending_prompt"] = ex
+    st.divider()
+
+    # Chat history
+    if "chat_messages" not in st.session_state:
+        st.session_state["chat_messages"] = []
+
+    for msg in st.session_state["chat_messages"]:
+        with st.chat_message(msg["role"], avatar="🇸🇬" if msg["role"] == "assistant" else "👤"):
+            st.markdown(msg["content"])
+
+    # Pending prompt from example buttons
+    if "pending_prompt" in st.session_state:
+        _prompt = st.session_state.pop("pending_prompt")
+        st.session_state["chat_messages"].append({"role": "user", "content": _prompt})
+        with st.spinner("Querying dataset…"):
+            _reply = run_chatbot(
+                st.session_state["chat_messages"], con, WHERE, OPTS, FILTER_DESC
+            )
+        st.session_state["chat_messages"].append({"role": "assistant", "content": _reply})
+        st.rerun()
+
+    # Chat input
+    if _inp := st.chat_input("Ask about HFI, salary trends, sectors, companies…"):
+        st.session_state["chat_messages"].append({"role": "user", "content": _inp})
+        with st.spinner("Querying dataset…"):
+            _reply = run_chatbot(
+                st.session_state["chat_messages"], con, WHERE, OPTS, FILTER_DESC
+            )
+        st.session_state["chat_messages"].append({"role": "assistant", "content": _reply})
+        st.rerun()
+
+    # Clear button
+    if st.session_state.get("chat_messages"):
+        st.markdown("")
+        if st.button("🗑️ Clear conversation", key="clear_chat"):
+            st.session_state["chat_messages"] = []
+            st.rerun()
+
+    st.divider()
+    st.caption(
+        "The assistant queries live data from your DuckDB dataset. "
+        "Answers reflect your current sidebar filters. "
+        "Requires `ANTHROPIC_API_KEY` in Streamlit secrets."
+    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
